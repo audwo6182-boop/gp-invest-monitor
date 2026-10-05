@@ -50,7 +50,10 @@ KEYWORDS = {
     "사업·수주": [
         "단일판매", "공급계약", "투자판단관련주요경영사항", "시설투자", "타법인주식"
     ],
-}
+    "신기술·임상·승인": [
+        "신기술", "신제품", "개발완료", "임상", "임상시험",
+        "품목허가", "허가", "승인", "식약처", "FDA"
+    ],}
 
 def safe_get(url, params=None, timeout=20):
     headers = {"User-Agent": "Mozilla/5.0 GP-Invest-Monitor/1.0"}
