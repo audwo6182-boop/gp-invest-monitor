@@ -61,6 +61,62 @@ def safe_get(url, params=None, timeout=20):
     r.raise_for_status()
     return r
 
+
+BODY_KEYWORDS = [
+    "신기술", "신제품", "개발완료", "개발 완료", "신약",
+    "임상시험", "임상 시험", "임상1상", "임상 1상",
+    "임상2상", "임상 2상", "임상3상", "임상 3상",
+    "품목허가", "품목 허가", "식품의약품안전처", "식약처",
+    "FDA", "IND", "NDA", "BLA", "탑라인", "topline",
+]
+
+
+def _decode_dart_document(raw: bytes) -> str:
+    for enc in ("utf-8", "cp949", "euc-kr"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
+@st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
+def find_body_keywords(api_key: str, rcept_no: str):
+    """OpenDART 공시 원문 ZIP을 읽어 투자자가 놓치기 쉬운 본문 키워드를 찾는다."""
+    if not api_key or not rcept_no:
+        return []
+
+    try:
+        r = safe_get(
+            f"{DART_BASE}/document.xml",
+            params={"crtfc_key": api_key, "rcept_no": rcept_no},
+            timeout=30,
+        )
+        content = r.content
+        if content[:2] != b"PK":
+            return []
+
+        hits = set()
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            for name in zf.namelist():
+                lower_name = name.lower()
+                if not lower_name.endswith((".xml", ".html", ".htm", ".txt")):
+                    continue
+
+                raw = zf.read(name)
+                text = _decode_dart_document(raw)
+                text = re.sub(r"<[^>]+>", " ", text)
+                compact = re.sub(r"\s+", "", text).lower()
+
+                for keyword in BODY_KEYWORDS:
+                    if re.sub(r"\s+", "", keyword).lower() in compact:
+                        hits.add(keyword)
+
+        return sorted(hits)
+    except Exception:
+        # 원문 한 건이 실패해도 전체 공시 조회는 계속 진행한다.
+        return []
+
 def classify_disclosure(title: str):
     title_compact = re.sub(r"\s+", "", title or "")
     hits = []
@@ -189,6 +245,12 @@ def dart_tab():
     with c3:
         important_only = st.checkbox("중요 공시만 보기", value=True)
 
+    body_scan = st.checkbox(
+        "공시 본문까지 검사 (신기술·임상·승인)",
+        value=True,
+        help="제목만으로 중요 내용을 찾기 어려운 '기타/사업·수주' 공시의 원문을 추가 확인합니다. 조회 시간이 조금 늘어날 수 있습니다.",
+    )
+
     if st.button("DART 공시 불러오기", type="primary", use_container_width=True):
         if not api_key:
             st.error("OpenDART API 인증키를 먼저 입력하세요.")
@@ -218,7 +280,23 @@ def dart_tab():
                     for f in filings:
                         title = f.get("report_nm", "")
                         category = classify_disclosure(title)
+                        rcept_no = f.get("rcept_no", "")
+                        body_hits = []
+
+                        # 제목만으로 내용을 놓치기 쉬운 공시만 원문을 추가 검사해 속도와 호출량을 절약한다.
+                        if body_scan and (category == "기타" or "사업·수주" in category):
+                            body_hits = find_body_keywords(api_key, rcept_no)
+                            if body_hits and "신기술·임상·승인" not in category:
+                                category = (
+                                    "신기술·임상·승인"
+                                    if category == "기타"
+                                    else category + ", 신기술·임상·승인"
+                                )
+
                         score = disclosure_score(title, category)
+                        if body_hits:
+                            score += 3
+
                         all_rows.append({
                             "중요도": "★★★★★" if score >= 5 else "★★★★" if score >= 4 else "★★★" if score >= 3 else "★★" if score >= 1 else "★",
                             "점수": score,
@@ -226,10 +304,11 @@ def dart_tab():
                             "종목코드": f.get("stock_code") or comp.get("stock_code", ""),
                             "접수일": f.get("rcept_dt", ""),
                             "분류": category,
+                            "본문감지": ", ".join(body_hits),
                             "공시명": title,
                             "제출인": f.get("flr_nm", ""),
                             "정정": "정정" if f.get("rm", "") else "",
-                            "DART 링크": DART_VIEW + f.get("rcept_no", ""),
+                            "DART 링크": DART_VIEW + rcept_no,
                         })
 
             if unresolved:
@@ -267,9 +346,10 @@ def dart_tab():
             st.subheader("핵심 공시 요약")
             top = df.head(15)
             for _, row in top.iterrows():
+                body_note = f"  \n본문감지: {row['본문감지']}" if row.get("본문감지") else ""
                 st.markdown(
                     f"**{row['회사명']} · {row['접수일']} · {row['분류']}**  \n"
-                    f"{row['공시명']}  \n"
+                    f"{row['공시명']}{body_note}  \n"
                     f"[DART 원문]({row['DART 링크']})"
                 )
 
