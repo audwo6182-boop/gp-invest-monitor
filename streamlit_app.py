@@ -55,11 +55,27 @@ KEYWORDS = {
         "품목허가", "허가", "승인", "식약처", "FDA"
     ],}
 
-def safe_get(url, params=None, timeout=20):
-    headers = {"User-Agent": "Mozilla/5.0 GP-Invest-Monitor/1.0"}
-    r = requests.get(url, params=params, headers=headers, timeout=timeout)
-    r.raise_for_status()
-    return r
+def safe_get(url, params=None, timeout=25, retries=3):
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    for attempt in range(retries):
+        try:
+            r = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=timeout
+            )
+            r.raise_for_status()
+            return r
+        except requests.RequestException:
+            if attempt < retries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+
+            raise RuntimeError(
+                "DART 서버 연결이 지연되고 있습니다. 잠시 후 다시 시도해주세요."
+            ) from None
 
 
 BODY_KEYWORDS = [
@@ -82,7 +98,11 @@ def _decode_dart_document(raw: bytes) -> str:
 
 @st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
 def find_body_keywords(api_key: str, rcept_no: str):
-    """OpenDART 공시 원문 ZIP을 읽어 투자자가 놓치기 쉬운 본문 키워드를 찾는다."""
+    """OpenDART 공시 원문 ZIP을 읽어 투자자가 놓치기 쉬운 본(url, params=None, timeout=20):
+    headers = {"User-Agent": "Mozilla/5.0 GP-Invest-Monitor/1.0"}
+    r = requests.get(url, params=pardef safe_getams, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r문 키워드를 찾는다."""
     if not api_key or not rcept_no:
         return []
 
